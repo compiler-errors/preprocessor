@@ -19,7 +19,7 @@ import java.util.List;
 /**
  * Goal which pre-processes sources.
  */
-@Mojo(name = "preprocessmagic", defaultPhase = LifecyclePhase.PROCESS_SOURCES)
+@Mojo(name = "preprocessor", defaultPhase = LifecyclePhase.PROCESS_SOURCES)
 public class PreprocessorMojo extends AbstractMojo {
     /**
      * Location of the file.
