@@ -20,24 +20,35 @@ public class Preprocessor {
 
     // Enums that describe contextful parsing modes (such as reading strings) and commands.
     enum ReadMode {REGULAR, BLOCK_COMMENT, LINE_COMMENT, STRING}
-    enum IncludeCommand {NONE, INCLUDE_LINE, REMOVE_LINE, INCLUDE_UNTIL, REMOVE_UNTIL, INCLUDE_COMMENT, INCLUDE_TODO_COMMENT, UNCOMMENT, END}
+    enum PreprocessorCommand {
+        NONE,
+        INCLUDE_NEXT_LINE, REMOVE_NEXT_LINE,
+        INCLUDE_THIS_LINE, REMOVE_THIS_LINE,
+        INCLUDE_UNTIL, REMOVE_UNTIL,
+        INCLUDE_FILE, REMOVE_FILE,
+        INCLUDE_PACKAGE, REMOVE_PACKAGE,
+        INCLUDE_COMMENT,
+        INCLUDE_TODO_COMMENT,
+        UNCOMMENT,
+        END
+    }
 
     // Command switching information.
     private ReadMode readMode = ReadMode.REGULAR;
-    private IncludeCommand command = IncludeCommand.NONE;
+    private PreprocessorCommand command = PreprocessorCommand.NONE;
     private boolean commandConditional = true;
     private boolean commandComment = false;
 
     // Expected delimiter if we're currently inside of a string-like (char or string) literal.
     private char expectedDelimiter = '\0';
 
-    public Preprocessor(HashMap<String, Integer> globalContext, Reader in, Writer out) {
+    public Preprocessor(Map<String, Integer> globalContext, Reader in, Writer out) {
         this.globalContext = new HashMap<>(globalContext);
         this.in = in;
         this.out = out;
     }
 
-    void process() throws IOException {
+    void process() throws IOException, DeleteFileException, PreprocessorException {
         // Last "character" (or EOF) that we have read.
         int read;
 
@@ -176,25 +187,28 @@ public class Preprocessor {
                         commandComment = true;
 
                         // Can't have any other commands running here...
-                        if (command != IncludeCommand.NONE)
-                            throw new UnsupportedOperationException("Cannot use inline comments with any other command active.");
+                        if (command != PreprocessorCommand.NONE)
+                            throw new PreprocessorException("Cannot use inline comments with any other command active.");
 
                         parseCommand();
 
-                        // We can handle INCLUDE_LINE and REMOVE_LINE right now, by throwing away the lineBuilder.
+                        // We can handle INCLUDE_NEXT_LINE and REMOVE_NEXT_LINE right now, by throwing away the lineBuilder.
                         switch (command) {
-                            case INCLUDE_LINE:
-                            case REMOVE_LINE: {
+                            case INCLUDE_NEXT_LINE: {
+                                command = PreprocessorCommand.INCLUDE_THIS_LINE;
                                 lineBuilder.append('\n');
-                                flushLine();
+                            } break;
+                            case REMOVE_NEXT_LINE: {
+                                command = PreprocessorCommand.REMOVE_THIS_LINE;
+                                lineBuilder.append('\n');
                             } break;
                             default: {
-                                throw new UnsupportedOperationException("The command '" + command + "' does not support inline mode.");
+                                throw new PreprocessorException("The command '" + command + "' does not support inline mode.");
                             }
                         }
 
                         // Finally, use the END command to ignore the rest of this comment block.
-                        command = IncludeCommand.END;
+                        command = PreprocessorCommand.END;
                     }
 
                     if (c == '\n' /* TODO: Make this more OS-agnostic. */) {
@@ -257,7 +271,7 @@ public class Preprocessor {
     }
 
     // Parse until the next `.`, and lowercase the string.
-    private String readCommand() throws IOException {
+    private String readCommand() throws IOException, PreprocessorException {
         StringBuilder ret = new StringBuilder();
         int next;
 
@@ -271,26 +285,34 @@ public class Preprocessor {
             }
 
             if (c == '\n') {
-                throw new UnsupportedOperationException("Command must end in a `.`!");
+                throw new PreprocessorException("Command must end in a `.`!");
             }
         }
 
-        throw new UnsupportedOperationException("Reached the end of the file without a full comment!");
+        throw new PreprocessorException("Reached the end of the file without a full comment!");
     }
 
     /* Flush a line, conditionally emitting it if the current command instructs us to do so. */
-    private void flushLine() throws IOException {
+    private void flushLine() throws IOException, PreprocessorException {
         boolean shouldEmitLine = true;
 
         switch (command) {
-            case INCLUDE_LINE: {
+            case INCLUDE_THIS_LINE: {
                 shouldEmitLine = commandConditional;
-                command = IncludeCommand.NONE;
+                command = PreprocessorCommand.NONE;
             }
             break;
-            case REMOVE_LINE: {
+            case REMOVE_THIS_LINE: {
                 shouldEmitLine = !commandConditional;
-                command = IncludeCommand.NONE;
+                command = PreprocessorCommand.NONE;
+            }
+            break;
+            case INCLUDE_NEXT_LINE: {
+                command = PreprocessorCommand.INCLUDE_THIS_LINE;
+            }
+            break;
+            case REMOVE_NEXT_LINE: {
+                command = PreprocessorCommand.REMOVE_THIS_LINE;
             }
             break;
             case INCLUDE_UNTIL: {
@@ -304,7 +326,7 @@ public class Preprocessor {
                 // Do nothing, intentionally.
             } break;
             default:
-                throw new UnsupportedOperationException("Uncaught command in flushLine: " + command);
+                throw new PreprocessorException("Uncaught command in flushLine: " + command);
         }
 
         if (shouldEmitLine) {
@@ -317,11 +339,12 @@ public class Preprocessor {
 
     // Flush the comment. If it's not a command, just append it.
     // Otherwise, possibly process it.
-    private void flushComment() throws IOException {
+    private void flushComment() throws IOException, DeleteFileException {
         if (!commandComment) {
             lineBuilder.append(commentBuilder);
         }
 
+        // TODO: Trash the partial line if it's not full of anything meaningful...
         switch (command) {
             case UNCOMMENT: {
                 if (commandConditional) {
@@ -338,7 +361,7 @@ public class Preprocessor {
                     lineBuilder.append(comment);
                 }
 
-                command = IncludeCommand.NONE;
+                command = PreprocessorCommand.NONE;
             }
             break;
             case INCLUDE_COMMENT: {
@@ -347,7 +370,7 @@ public class Preprocessor {
                     lineBuilder.append(commentBuilder.substring(0, 2) + commentBuilder.substring(3));
                 }
 
-                command = IncludeCommand.NONE;
+                command = PreprocessorCommand.NONE;
             } break;
             case INCLUDE_TODO_COMMENT: {
                 if (commandConditional) {
@@ -356,12 +379,29 @@ public class Preprocessor {
                 }
 
                 // Also include the exception so methods that return non-void don't have compiler errors...
-                lineBuilder.append("throw new UnsupportedOperationException(\"TODO: Implement me!\");\n");
-                command = IncludeCommand.NONE;
+                lineBuilder.append("throw new PreprocessorException(\"TODO: Implement me!\");\n");
+                command = PreprocessorCommand.NONE;
             } break;
+            case INCLUDE_FILE: {
+                if (!commandConditional)
+                    throw new DeleteFileException(false);
+            } break;
+            case REMOVE_FILE: {
+                if (commandConditional)
+                    throw new DeleteFileException(false);
+            } break;
+
+            case INCLUDE_PACKAGE: {
+                if (!commandConditional)
+                    throw new DeleteFileException(true);
+            } break;
+            case REMOVE_PACKAGE: {
+                if (commandConditional)
+                    throw new DeleteFileException(true);
+            }
             case END: {
                 // Don't do anything, but ALSO throw away the comment.
-                command = IncludeCommand.NONE;
+                command = PreprocessorCommand.NONE;
             }
             break;
         }
@@ -370,63 +410,94 @@ public class Preprocessor {
         commandComment = false;
     }
 
-    private void parseCommand() throws IOException {
+    private void parseCommand() throws IOException, PreprocessorException {
         command = null;
         commandConditional = false;
 
-        String command = readCommand();
-        CharStream cs = CharStreams.fromString(command);
-        PreprocessorCommandLexer lexer = new PreprocessorCommandLexer(cs);
-        CommonTokenStream tokens = new CommonTokenStream(lexer);
+        String commandString = readCommand();
 
-        PreprocessorCommandParser parser = new PreprocessorCommandParser(tokens);
-        parser.setErrorHandler(new BailErrorStrategy());
+        try {
+            CharStream cs = CharStreams.fromString(commandString);
+            PreprocessorCommandLexer lexer = new PreprocessorCommandLexer(cs);
+            CommonTokenStream tokens = new CommonTokenStream(lexer);
 
-        PreprocessorCommandParser.CommandContext ctx = parser.command();
+            PreprocessorCommandParser parser = new PreprocessorCommandParser(tokens);
+            parser.setErrorHandler(new BailErrorStrategy());
 
-        ParseTreeWalker ptw = new ParseTreeWalker();
-        ptw.walk(new CommandParser(), ctx);
+            PreprocessorCommandParser.CommandContext ctx = parser.command();
+
+            ParseTreeWalker ptw = new ParseTreeWalker();
+            ptw.walk(new CommandParser(), ctx);
+        } catch (UnsupportedOperationException uoe) {
+            throw new PreprocessorException(uoe.getMessage());
+        } catch (RuntimeException rte) {
+            throw new PreprocessorException("Could not feasibly parse: " + commandString);
+        }
+
+        if (command == null) {
+            throw new PreprocessorException("Could not parse command line: \"" + commandString + "\"!");
+        }
     }
 
     class CommandParser extends PreprocessorCommandBaseListener {
         @Override
         public void enterInclude_until_action(PreprocessorCommandParser.Include_until_actionContext ctx) {
-            command = IncludeCommand.INCLUDE_UNTIL;
+            command = PreprocessorCommand.INCLUDE_UNTIL;
         }
 
         @Override
         public void enterInclude_line_action(PreprocessorCommandParser.Include_line_actionContext ctx) {
-            command = IncludeCommand.INCLUDE_LINE;
+            command = PreprocessorCommand.INCLUDE_NEXT_LINE;
         }
 
         @Override
         public void enterRemove_until_action(PreprocessorCommandParser.Remove_until_actionContext ctx) {
-            command = IncludeCommand.REMOVE_UNTIL;
+            command = PreprocessorCommand.REMOVE_UNTIL;
         }
 
         @Override
         public void enterRemove_line_action(PreprocessorCommandParser.Remove_line_actionContext ctx) {
-            command = IncludeCommand.REMOVE_LINE;
+            command = PreprocessorCommand.REMOVE_NEXT_LINE;
         }
 
         @Override
         public void enterInclude_comment_action(PreprocessorCommandParser.Include_comment_actionContext ctx) {
-            command = IncludeCommand.INCLUDE_COMMENT;
+            command = PreprocessorCommand.INCLUDE_COMMENT;
         }
 
         @Override
         public void enterInclude_todo_action(PreprocessorCommandParser.Include_todo_actionContext ctx) {
-            command = IncludeCommand.INCLUDE_TODO_COMMENT;
+            command = PreprocessorCommand.INCLUDE_TODO_COMMENT;
         }
 
         @Override
         public void enterUncomment_action(PreprocessorCommandParser.Uncomment_actionContext ctx) {
-            command = IncludeCommand.UNCOMMENT;
+            command = PreprocessorCommand.UNCOMMENT;
+        }
+
+        @Override
+        public void enterInclude_file_action(PreprocessorCommandParser.Include_file_actionContext ctx) {
+            command = PreprocessorCommand.INCLUDE_FILE;
+        }
+
+        @Override
+        public void enterRemove_file_action(PreprocessorCommandParser.Remove_file_actionContext ctx) {
+            command = PreprocessorCommand.REMOVE_FILE;
+        }
+
+        @Override
+        public void enterInclude_package_action(PreprocessorCommandParser.Include_package_actionContext ctx) {
+            command = PreprocessorCommand.INCLUDE_PACKAGE;
+        }
+
+        @Override
+        public void enterRemove_package_action(PreprocessorCommandParser.Remove_package_actionContext ctx) {
+            command = PreprocessorCommand.REMOVE_PACKAGE;
         }
 
         @Override
         public void enterEnd_action(PreprocessorCommandParser.End_actionContext ctx) {
-            command = IncludeCommand.END;
+            command = PreprocessorCommand.END;
         }
 
         @Override
