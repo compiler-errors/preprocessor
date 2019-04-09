@@ -49,5 +49,5 @@ GT : '>' ;
 EQ : '=' | '==' ;
 
 LITERAL : [0-9]+ ;
-VARIABLE : '#' [a-z]* ;
+VARIABLE : '#' [a-z_\-]* ;
 WS: [ \t\n\r]+ -> skip ;

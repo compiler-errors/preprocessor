@@ -2,9 +2,13 @@ package io.errs;
 
 import org.antlr.v4.runtime.*;
 import org.antlr.v4.runtime.tree.*;
+import org.apache.maven.plugin.logging.Log;
 
 import java.io.*;
 import java.util.*;
+import java.util.logging.Logger;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 public class Preprocessor {
     static int LOOKBACK_SIZE = 5;
@@ -225,6 +229,9 @@ public class Preprocessor {
             }
         }
 
+        if (lineBuilder.length() > 0)
+            flushLine();
+
         out.flush();
     }
 
@@ -339,12 +346,11 @@ public class Preprocessor {
 
     // Flush the comment. If it's not a command, just append it.
     // Otherwise, possibly process it.
-    private void flushComment() throws IOException, DeleteFileException {
+    private void flushComment() throws DeleteFileException {
         if (!commandComment) {
             lineBuilder.append(commentBuilder);
         }
 
-        // TODO: Trash the partial line if it's not full of anything meaningful...
         switch (command) {
             case UNCOMMENT: {
                 if (commandConditional) {
@@ -352,13 +358,15 @@ public class Preprocessor {
 
                     // Uncomment commands need to have their "comment" delimiters chopped off...
                     if (comment.startsWith("/*")) {
-                        comment = comment.substring(2, comment.length() - 2);
+                        comment = comment.substring(3, comment.length() - 2);
                     } else {
                         // TODO: Trimming might be unnecessary or unwanted?
                         comment = comment.substring(3).trim() + '\n';
                     }
 
                     lineBuilder.append(comment);
+                } else {
+                    removeCommentLine();
                 }
 
                 command = PreprocessorCommand.NONE;
@@ -368,6 +376,8 @@ public class Preprocessor {
                 if (commandConditional) {
                     // Chop out the `~` from the command, but keep the command delimiter.
                     lineBuilder.append(commentBuilder.substring(0, 2) + commentBuilder.substring(3));
+                } else {
+                    removeCommentLine();
                 }
 
                 command = PreprocessorCommand.NONE;
@@ -376,31 +386,50 @@ public class Preprocessor {
                 if (commandConditional) {
                     // Chop out the `~` from inside.
                     lineBuilder.append(commentBuilder.substring(0, 2) + " TODO:" + commentBuilder.substring(3));
+
+                    // Also include the exception so methods that return non-void don't have compiler errors...
+                    lineBuilder.append("throw new UnsupportedOperationException(\"TODO: Implement me!\");\n");
+                } else {
+                    removeCommentLine();
                 }
 
-                // Also include the exception so methods that return non-void don't have compiler errors...
-                lineBuilder.append("throw new PreprocessorException(\"TODO: Implement me!\");\n");
                 command = PreprocessorCommand.NONE;
             } break;
             case INCLUDE_FILE: {
                 if (!commandConditional)
                     throw new DeleteFileException(false);
+
+                command = PreprocessorCommand.NONE;
             } break;
             case REMOVE_FILE: {
                 if (commandConditional)
                     throw new DeleteFileException(false);
+
+                command = PreprocessorCommand.NONE;
             } break;
 
             case INCLUDE_PACKAGE: {
                 if (!commandConditional)
                     throw new DeleteFileException(true);
+
+                command = PreprocessorCommand.NONE;
             } break;
             case REMOVE_PACKAGE: {
                 if (commandConditional)
                     throw new DeleteFileException(true);
+
+                command = PreprocessorCommand.NONE;
+            } break;
+            case INCLUDE_NEXT_LINE:
+            case REMOVE_NEXT_LINE:
+            case INCLUDE_UNTIL:
+            case REMOVE_UNTIL: {
+                removeCommentLine();
+                break;
             }
             case END: {
                 // Don't do anything, but ALSO throw away the comment.
+                removeCommentLine();
                 command = PreprocessorCommand.NONE;
             }
             break;
@@ -408,6 +437,12 @@ public class Preprocessor {
 
         commentBuilder = new StringBuilder();
         commandComment = false;
+    }
+
+    private void removeCommentLine() {
+        if (lineBuilder.toString().matches("^\\s*$")) {
+            lineBuilder = new StringBuilder();
+        }
     }
 
     private void parseCommand() throws IOException, PreprocessorException {
