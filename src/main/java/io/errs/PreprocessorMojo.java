@@ -181,12 +181,8 @@ public class PreprocessorMojo extends AbstractMojo {
             }
 
             return files;
-        }
-
-        if (input.getName().endsWith(".java"))
+        } else
             return List.of(input);
-        else
-            return List.of();
     }
 
     private String rewritePath(String source) throws IOException {
