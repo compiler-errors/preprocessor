@@ -65,7 +65,7 @@ public class PreprocessorMojo extends AbstractMojo {
                 String outputPath = rewritePath(inputPath);
 
                 for (String excluded : excludedPaths) {
-                    if (inputFile.toPath().startsWith(excluded)) {
+                    if (inputFile.getCanonicalPath().startsWith(excluded)) {
                         getLog().debug("Excluding file '" + inputPath + "' because excluded path '" + excluded + "'");
                         continue outer;
                     }
@@ -89,10 +89,14 @@ public class PreprocessorMojo extends AbstractMojo {
                         p.process();
                     } catch (DeleteFileException e) {
                         if (e.isDeleteFullPackage()) {
-                            String outputParentDirectory = rewritePath(inputFile.getParentFile().getCanonicalPath());
-                            getLog().debug("Deleting package: " + outputParentDirectory);
+                            String inputParentDirectory = inputFile.getParentFile().getCanonicalPath();
+                            String outputParentDirectory = rewritePath(inputParentDirectory);
 
-                            excludedPaths.add(outputParentDirectory);
+
+                            getLog().debug("Excluding input package: " + inputParentDirectory);
+                            excludedPaths.add(inputParentDirectory);
+
+                            getLog().debug("Deleting output package: " + outputParentDirectory);
                             deleteRecursively(outputParentDirectory);
                         } else {
                             getLog().debug("Deleting file: " + outputPath);
@@ -154,12 +158,14 @@ public class PreprocessorMojo extends AbstractMojo {
         Path path = Paths.get(fileOrDir);
 
         if (!Files.exists(path)) {
+            getLog().debug("This path '" + fileOrDir + "' does not exist...");
             return;
         }
 
         Files.walkFileTree(path, new SimpleFileVisitor<>() {
             @Override
             public FileVisitResult visitFile(Path file, BasicFileAttributes attrs) throws IOException {
+                getLog().debug("Deleting file " + file);
                 Files.delete(file);
                 return FileVisitResult.CONTINUE;
             }
